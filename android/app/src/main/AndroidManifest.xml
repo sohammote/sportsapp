@@ -1,0 +1,60 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.sportsapp">
+
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.NFC"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
+    <application
+        android:name="${applicationName}"
+        android:label="sports_attendance"
+        android:icon="@mipmap/ic_launcher">
+
+    <!-- ✅ Force tooling to treat this as v2 embedding -->
+    <meta-data android:name="flutterEmbedding" android:value="2" />
+
+    <activity
+        android:name=".MainActivity"
+        android:exported="true"
+        android:launchMode="singleTop"
+        android:theme="@style/LaunchTheme"
+        android:configChanges="keyboard|keyboardHidden|orientation|screenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+        android:hardwareAccelerated="true"
+        android:windowSoftInputMode="adjustResize">
+        <meta-data android:name="io.flutter.embedding.android.NormalTheme" android:resource="@style/NormalTheme" />
+        <intent-filter>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent-filter>
+
+        <!-- Deep links optional -->
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="sportsapp" android:host="checkin" />
+        </intent-filter>
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="sportsapp" android:host="reward" />
+        </intent-filter>
+    </activity>
+
+    <!-- HCE service -->
+    <service
+        android:name=".HceService"
+        android:exported="true"
+        android:permission="android.permission.BIND_NFC_SERVICE">
+        <intent-filter>
+            <action android:name="android.nfc.cardemulation.action.HOST_APDU_SERVICE" />
+        </intent-filter>
+        <meta-data
+            android:name="android.nfc.cardemulation.host_apdu_service"
+            android:resource="@xml/apduservice" />
+    </service>
+
+</application>
+</manifest>

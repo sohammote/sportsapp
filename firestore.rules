@@ -1,0 +1,96 @@
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthed() { return request.auth != null; }
+    function isSelf(uid) { return isAuthed() && request.auth.uid == uid; }
+    function isAdmin() {
+      // profiles/{uid}.isAdmin == true
+      return isAuthed() && get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.isAdmin == true;
+    }
+    function isEventOwner(eventId) {
+      return isAuthed() && get(/databases/$(database)/documents/events/$(eventId)).data.ownerUid == request.auth.uid;
+    }
+    function nowTs() { return request.time; }
+
+    // profiles
+    match /profiles/{uid} {
+      allow read: if isSelf(uid) || isAdmin();
+      allow create: if isSelf(uid);
+      allow update: if isSelf(uid) && !(("isAdmin" in request.resource.data) && (request.resource.data.isAdmin != resource.data.isAdmin));
+      allow delete: if false;
+    }
+
+    // events
+    match /events/{eventId} {
+      allow read: if isAuthed();
+      allow create, update, delete: if isAdmin() || isEventOwner(eventId);
+    }
+
+    // eventMembers
+    match /eventMembers/{eventId}/members/{uid} {
+      allow read: if isAuthed() && (isSelf(uid) || isAdmin() || isEventOwner(eventId));
+      allow create, update, delete: if isAdmin() || isEventOwner(eventId);
+    }
+
+    // Attendance tokens
+    match /tokens/{tokenId} {
+      allow read: if isAuthed();
+      allow create, update: if isAdmin() || (isAuthed() && request.resource.data.createdBy == request.auth.uid);
+      allow delete: if false;
+    }
+
+    // Attendance logs: attendance/{eventId}/logs/{tokenId}
+    match /attendance/{eventId}/logs/{tokenId} {
+      allow read: if isAuthed();
+      allow create: if isAuthed()
+        && request.resource.id == tokenId
+        && exists(/databases/$(database)/documents/tokens/$(tokenId))
+        && get(/databases/$(database)/documents/tokens/$(tokenId)).data.isActive == true
+        && get(/databases/$(database)/documents/tokens/$(tokenId)).data.eventId == eventId
+        && get(/databases/$(database)/documents/tokens/$(tokenId)).data.expiresAt > nowTs();
+      allow update, delete: if false;
+    }
+
+    // Rewards catalog (read for all authed, admin write)
+    match /rewards/{rewardId} {
+      allow read: if isAuthed() && (resource.data.active == true || isAdmin());
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Reward config (admin only)
+    match /rewardConfigs/{configId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Points ledger (per-user)
+    match /ledgers/{uid}/entries/{entryId} {
+      allow read: if isSelf(uid) || isAdmin();
+      allow create: if isAdmin(); // app accrual can be via attendance+rules in future
+      allow update, delete: if false;
+    }
+
+    // Reward tokens (admin issues)
+    match /rewardTokens/{tokenId} {
+      allow read: if isAuthed();
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // Redemptions
+    match /redemptions/{tokenId} {
+      allow read: if isAuthed();
+      allow create: if isAuthed()
+        && request.resource.id == tokenId
+        && exists(/databases/$(database)/documents/rewardTokens/$(tokenId))
+        && get(/databases/$(database)/documents/rewardTokens/$(tokenId)).data.isActive == true
+        && (
+            // If token bound to uid, enforce
+            (!( "uid" in get(/databases/$(database)/documents/rewardTokens/$(tokenId)).data))
+            || (get(/databases/$(database)/documents/rewardTokens/$(tokenId)).data.uid == request.auth.uid)
+        )
+        && get(/databases/$(database)/documents/rewardTokens/$(tokenId)).data.expiresAt > nowTs();
+      allow update, delete: if false;
+    }
+  }
+}
