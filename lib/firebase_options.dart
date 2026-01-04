@@ -9,7 +9,7 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyD7dkhKOO4Cb49dwLiUnG6rhG9wV8KKMSg',
+    apiKey: '123AIzaSyD7dkhKOO4Cb49dwLiUnG6rhG9wV8KKMSg',
     appId: '1:638941931419:android:3a3342b53fafb58829a33e',
     messagingSenderId: '638941931419',
     projectId: 'sports-attendance-system',
