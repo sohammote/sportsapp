@@ -1,7 +1,5 @@
-
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'firestore_service.dart';
 import 'package:sportsapp/providers.dart';
@@ -15,16 +13,19 @@ class AdminService {
   FirebaseFirestore get _db => _read(firestoreServiceProvider).db;
 
   String _randId([int len = 20]) {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const chars =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     final rnd = Random.secure();
     return List.generate(len, (_) => chars[rnd.nextInt(chars.length)]).join();
   }
 
+  // ── Create event with points per attendance ──
   Future<String> createEvent({
     required String ownerUid,
     required String name,
     required DateTime startsAt,
     required DateTime endsAt,
+    int pointsPerAttendance = 10,
   }) async {
     final doc = _db.collection('events').doc();
     await doc.set({
@@ -32,12 +33,54 @@ class AdminService {
       'name': name,
       'startsAt': Timestamp.fromDate(startsAt),
       'endsAt': Timestamp.fromDate(endsAt),
+      'pointsPerAttendance': pointsPerAttendance,
     });
-    // Add owner membership
-    await _db.collection('eventMembers').doc(doc.id).collection('members').doc(ownerUid).set({
-      'role': 'owner',
+    await _db
+        .collection('eventMembers')
+        .doc(doc.id)
+        .collection('members')
+        .doc(ownerUid)
+        .set({'role': 'owner'});
+    return doc.id;
+  }
+
+  // ── Create reward (no image for now) ──
+  Future<String> createReward({
+    required String title,
+    required String description,
+    required int costPoints,
+    required String createdBy,
+  }) async {
+    final doc = _db.collection('rewards').doc();
+    await doc.set({
+      'title': title,
+      'description': description,
+      'costPoints': costPoints,
+      'active': true,
+      'imageUrl': null,
+      'createdBy': createdBy,
+      'createdAt': FieldValue.serverTimestamp(),
     });
     return doc.id;
+  }
+
+  // ── Update reward ──
+  Future<void> updateReward({
+    required String rewardId,
+    required String title,
+    required String description,
+    required int costPoints,
+  }) async {
+    await _db.collection('rewards').doc(rewardId).update({
+      'title': title,
+      'description': description,
+      'costPoints': costPoints,
+    });
+  }
+
+  // ── Delete reward ──
+  Future<void> deleteReward(String rewardId) async {
+    await _db.collection('rewards').doc(rewardId).delete();
   }
 
   Future<String> createAttendanceToken({
@@ -81,6 +124,9 @@ class AdminService {
   }
 
   Future<void> deactivateRewardToken(String tokenId) {
-    return _db.collection('rewardTokens').doc(tokenId).update({'isActive': false});
+    return _db
+        .collection('rewardTokens')
+        .doc(tokenId)
+        .update({'isActive': false});
   }
 }
