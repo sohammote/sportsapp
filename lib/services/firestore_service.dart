@@ -1,7 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+
 class FirestoreService {
   final db = FirebaseFirestore.instance;
+
 
   // ── Collection refs ──
   CollectionReference profiles() => db.collection('profiles');
@@ -27,6 +29,9 @@ class FirestoreService {
         'points': 0,
         'totalAttendance': 0,
         'name': email.split('@')[0],
+        'streak': 0,
+        'badges': [],
+        'lastCheckIn': null,
         'createdAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     }

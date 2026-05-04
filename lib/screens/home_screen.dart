@@ -44,35 +44,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         Navigator.pushNamed(context, Routes.history);
         break;
       case 3:
-      // Profile - could add a profile screen later
-        _showProfileDialog();
+        Navigator.pushNamed(context, Routes.profile);
         break;
     }
-  }
-
-  void _showProfileDialog() {
-    final user = FirebaseAuth.instance.currentUser!;
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Profile'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Email: ${user.email}'),
-            const SizedBox(height: 8),
-            Text('UID: ${user.uid}'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
@@ -134,6 +108,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           final userPoints = userData?['points'] ?? 0;
           final totalAttendance = userData?['totalAttendance'] ?? 0;
           final userName = userData?['name'] ?? user.email?.split('@')[0] ?? 'User';
+          final streak = (userData?['streak'] ?? 0) as int;
+          final earnedBadgeIds = List<String>.from(userData?['badges'] as List? ?? []);
 
           return SingleChildScrollView(
             child: Column(
@@ -200,6 +176,117 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
                 ),
 
+                const SizedBox(height: 16),
+
+                // ── Streak + Badges Banner ──
+                if (streak > 0 || earnedBadgeIds.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(
+                      children: [
+                        // Streak chip
+                        if (streak > 0)
+                          Expanded(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: streak >= 5
+                                    ? Colors.deepOrange.withOpacity(0.12)
+                                    : AppTheme.accentOrange.withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: streak >= 5
+                                      ? Colors.deepOrange.withOpacity(0.3)
+                                      : AppTheme.accentOrange.withOpacity(0.3),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    streak >= 5 ? '🔥🔥' : '🔥',
+                                    style:
+                                    const TextStyle(fontSize: 18),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Column(
+                                    crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '$streak Week Streak',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13,
+                                            color: streak >= 5
+                                                ? Colors.deepOrange
+                                                : AppTheme.accentOrange),
+                                      ),
+                                      Text(
+                                        'Keep attending!',
+                                        style: const TextStyle(
+                                            fontSize: 10,
+                                            color: AppTheme.textLight),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+
+                        if (streak > 0 && earnedBadgeIds.isNotEmpty)
+                          const SizedBox(width: 10),
+
+                        // Badges chip
+                        if (earnedBadgeIds.isNotEmpty)
+                          Expanded(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: AppTheme.primaryBlue
+                                    .withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: AppTheme.primaryBlue
+                                      .withOpacity(0.2),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Text('🏅',
+                                      style: TextStyle(fontSize: 18)),
+                                  const SizedBox(width: 8),
+                                  Column(
+                                    crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '${earnedBadgeIds.length} Badge${earnedBadgeIds.length == 1 ? '' : 's'}',
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13,
+                                            color: AppTheme.primaryBlue),
+                                      ),
+                                      const Text(
+                                        'View in profile',
+                                        style: TextStyle(
+                                            fontSize: 10,
+                                            color: AppTheme.textLight),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+
                 const SizedBox(height: 24),
 
                 // Quick Actions Section
@@ -263,6 +350,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         'View & redeem',
                         Colors.purple,
                             () => Navigator.pushNamed(context, Routes.rewards),
+                      ),
+                      _buildActionCard(
+                        context,
+                        Icons.calendar_month,
+                        'Events',
+                        'View schedule',
+                        AppTheme.accentOrange,
+                            () => Navigator.pushNamed(context, Routes.eventsCalendar),
+                      ),
+                      _buildActionCard(
+                        context,
+                        Icons.people,
+                        'Community',
+                        'Chat & groups',
+                        Colors.teal,
+                            () => Navigator.pushNamed(context, Routes.groups),
                       ),
                     ],
                   ),

@@ -1,7 +1,9 @@
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'firestore_service.dart';
+import 'notification_service.dart';
 import 'package:sportsapp/providers.dart';
 
 typedef Reader = T Function<T>(ProviderListenable<T>);
@@ -41,7 +43,47 @@ class AdminService {
         .collection('members')
         .doc(ownerUid)
         .set({'role': 'owner'});
+
+    // Notify all users about new event
+    final startStr =
+        '${startsAt.day}/${startsAt.month} at ${startsAt.hour.toString().padLeft(2, '0')}:${startsAt.minute.toString().padLeft(2, '0')}';
+    await NotificationService().notifyNewEvent(
+      eventName: name,
+      startTime: startStr,
+      points: pointsPerAttendance,
+    );
+
     return doc.id;
+  }
+
+  // ── Update event ──
+  Future<void> updateEvent({
+    required String eventId,
+    required String name,
+    required DateTime startsAt,
+    required DateTime endsAt,
+    required int pointsPerAttendance,
+  }) async {
+    await _db.collection('events').doc(eventId).update({
+      'name': name,
+      'startsAt': Timestamp.fromDate(startsAt),
+      'endsAt': Timestamp.fromDate(endsAt),
+      'pointsPerAttendance': pointsPerAttendance,
+    });
+
+    // Notify all users about update
+    await NotificationService().notifyEventUpdated(eventName: name);
+  }
+
+  // ── Delete event ──
+  Future<void> deleteEvent({
+    required String eventId,
+    required String eventName,
+  }) async {
+    await _db.collection('events').doc(eventId).delete();
+
+    // Notify all users about cancellation
+    await NotificationService().notifyEventDeleted(eventName: eventName);
   }
 
   // ── Create reward (no image for now) ──
@@ -61,6 +103,13 @@ class AdminService {
       'createdBy': createdBy,
       'createdAt': FieldValue.serverTimestamp(),
     });
+
+    // Notify all users about new reward
+    await NotificationService().notifyNewReward(
+      rewardTitle: title,
+      costPoints: costPoints,
+    );
+
     return doc.id;
   }
 

@@ -95,9 +95,15 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen> {
         });
       }
     } catch (e) {
+      final errorMsg = e.toString().replaceAll('Exception: ', '');
+      final isAlreadyCheckedIn = errorMsg.toLowerCase().contains('already checked in') ||
+          errorMsg.toLowerCase().contains('already attended');
+
       setState(() {
         _scanStatus = ScanStatus.error;
-        _scanResult = 'Error: ${e.toString()}';
+        _scanResult = isAlreadyCheckedIn
+            ? '⚠️ Already Checked In\nYou have already attended this event.'
+            : 'Error: $errorMsg';
       });
     }
 

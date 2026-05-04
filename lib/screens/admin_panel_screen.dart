@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../providers.dart';
+import '../routes.dart';
 import '../services/payload_codec.dart';
 
 // AppTheme colors
@@ -55,13 +56,15 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
   }
 
   @override
   void dispose() {
     _eventName.dispose();
     _pointsController.dispose();
+    _groupName.dispose();
+    _groupDesc.dispose();
     _tabController.dispose();
     _attendanceTimer?.cancel();
     _rewardTimer?.cancel();
@@ -169,19 +172,536 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen>
           labelColor: Colors.white,
           unselectedLabelColor: Colors.white70,
           tabs: const [
+            Tab(icon: Icon(Icons.dashboard), text: 'Dashboard'),
             Tab(icon: Icon(Icons.event), text: 'Events'),
             Tab(icon: Icon(Icons.qr_code), text: 'Tokens'),
             Tab(icon: Icon(Icons.card_giftcard), text: 'Rewards'),
+            Tab(icon: Icon(Icons.people), text: 'Groups'),
           ],
         ),
       ),
       body: TabBarView(
         controller: _tabController,
         children: [
+          _buildDashboardTab(),
           _buildEventsTab(user),
           _buildTokensTab(user),
           _buildRewardsTab(user),
+          _buildGroupsTab(user),
         ],
+      ),
+    );
+  }
+
+  // ==================== DASHBOARD ====================
+
+  Future<void> _loadDashboard() async {
+    setState(() => _dashboardLoading = true);
+    try {
+      final db = FirebaseFirestore.instance;
+
+      // Run all queries in parallel
+      final results = await Future.wait([
+        db.collection('profiles').get(),
+        db.collection('events').get(),
+        db.collection('tokens').get(),
+        db.collection('rewards').get(),
+        db.collection('redemptions').get(),
+        db.collection('profiles')
+            .orderBy('points', descending: true)
+            .limit(5)
+            .get(),
+        db.collection('profiles')
+            .orderBy('totalAttendance', descending: true)
+            .limit(5)
+            .get(),
+        db.collection('events')
+            .orderBy('startsAt', descending: false)
+            .where('startsAt',
+            isGreaterThan: Timestamp.fromDate(DateTime.now()))
+            .limit(3)
+            .get(),
+      ]);
+
+      final profiles = results[0] as QuerySnapshot;
+      final events = results[1] as QuerySnapshot;
+      final tokens = results[2] as QuerySnapshot;
+      final rewards = results[3] as QuerySnapshot;
+      final redemptions = results[4] as QuerySnapshot;
+      final topPoints = results[5] as QuerySnapshot;
+      final topAttendance = results[6] as QuerySnapshot;
+      final upcomingEvents = results[7] as QuerySnapshot;
+
+      // Count total check-ins across all events
+      int totalCheckIns = 0;
+      for (final event in events.docs) {
+        final logs = await db
+            .collection('attendance')
+            .doc(event.id)
+            .collection('logs')
+            .get();
+        totalCheckIns += logs.docs.length;
+      }
+
+      // Total points awarded across all users
+      int totalPoints = 0;
+      for (final p in profiles.docs) {
+        final d = p.data() as Map<String, dynamic>;
+        totalPoints += (d['points'] ?? 0) as int;
+      }
+
+      // Admin count
+      int adminCount = 0;
+      for (final p in profiles.docs) {
+        final d = p.data() as Map<String, dynamic>;
+        if (d['isAdmin'] == true) adminCount++;
+      }
+
+      setState(() {
+        _dashboardData = {
+          'totalUsers': profiles.docs.length,
+          'totalAdmins': adminCount,
+          'totalEvents': events.docs.length,
+          'totalCheckIns': totalCheckIns,
+          'totalTokens': tokens.docs.length,
+          'totalRewards': rewards.docs.length,
+          'totalRedemptions': redemptions.docs.length,
+          'totalPoints': totalPoints,
+          'topPoints': topPoints.docs,
+          'topAttendance': topAttendance.docs,
+          'upcomingEvents': upcomingEvents.docs,
+        };
+        _dashboardLoading = false;
+      });
+    } catch (e) {
+      setState(() => _dashboardLoading = false);
+      _showSnackBar('Error loading dashboard: $e', isError: true);
+    }
+  }
+
+  Widget _buildDashboardTab() {
+    return RefreshIndicator(
+      onRefresh: _loadDashboard,
+      child: _dashboardLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _dashboardData == null
+          ? _buildDashboardEmpty()
+          : _buildDashboardContent(),
+    );
+  }
+
+  Widget _buildDashboardEmpty() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.dashboard,
+              size: 70,
+              color: AppTheme.textLight.withOpacity(0.4)),
+          const SizedBox(height: 16),
+          const Text('Admin Dashboard',
+              style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textDark)),
+          const SizedBox(height: 8),
+          const Text('Load stats to see your app overview',
+              style:
+              TextStyle(fontSize: 14, color: AppTheme.textLight)),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: _loadDashboard,
+            icon: const Icon(Icons.refresh),
+            label: const Text('Load Dashboard'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primaryBlue,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 24, vertical: 14),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDashboardContent() {
+    final d = _dashboardData!;
+    final now = DateTime.now();
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        // ── Header ──
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Dashboard',
+                    style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textDark)),
+                Text(
+                  'Last updated: ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
+                  style: const TextStyle(
+                      fontSize: 12, color: AppTheme.textLight),
+                ),
+              ],
+            ),
+            IconButton(
+              onPressed: _loadDashboard,
+              icon: const Icon(Icons.refresh,
+                  color: AppTheme.primaryBlue),
+              tooltip: 'Refresh',
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+
+        // ── Stats Grid ──
+        GridView.count(
+          crossAxisCount: 2,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisSpacing: 12,
+          mainAxisSpacing: 12,
+          childAspectRatio: 1.4,
+          children: [
+            _buildStatCard(
+              icon: Icons.people,
+              label: 'Total Users',
+              value: '${d['totalUsers']}',
+              sub: '${d['totalAdmins']} admin(s)',
+              color: AppTheme.primaryBlue,
+            ),
+            _buildStatCard(
+              icon: Icons.event_available,
+              label: 'Total Check-ins',
+              value: '${d['totalCheckIns']}',
+              sub: 'across all events',
+              color: AppTheme.secondaryGreen,
+            ),
+            _buildStatCard(
+              icon: Icons.event,
+              label: 'Total Events',
+              value: '${d['totalEvents']}',
+              sub: '${(d['upcomingEvents'] as List).length} upcoming',
+              color: AppTheme.accentOrange,
+            ),
+            _buildStatCard(
+              icon: Icons.stars,
+              label: 'Points Awarded',
+              value: '${d['totalPoints']}',
+              sub: 'across all users',
+              color: Colors.purple,
+            ),
+            _buildStatCard(
+              icon: Icons.card_giftcard,
+              label: 'Rewards',
+              value: '${d['totalRewards']}',
+              sub: '${d['totalRedemptions']} redeemed',
+              color: Colors.teal,
+            ),
+            _buildStatCard(
+              icon: Icons.qr_code,
+              label: 'Tokens Issued',
+              value: '${d['totalTokens']}',
+              sub: 'attendance tokens',
+              color: Colors.indigo,
+            ),
+          ],
+        ),
+        const SizedBox(height: 20),
+
+        // ── Upcoming Events ──
+        _buildDashboardSection(
+          icon: Icons.upcoming,
+          title: 'Upcoming Events',
+          color: AppTheme.accentOrange,
+          child: (d['upcomingEvents'] as List).isEmpty
+              ? _buildEmptyRow('No upcoming events')
+              : Column(
+            children: (d['upcomingEvents'] as List)
+                .map((doc) {
+              final data =
+              (doc as DocumentSnapshot).data()
+              as Map<String, dynamic>;
+              final name =
+                  data['name'] as String? ?? 'Event';
+              final startsAt =
+              (data['startsAt'] as Timestamp?)
+                  ?.toDate()
+                  .toLocal();
+              final pts =
+              (data['pointsPerAttendance'] ?? 10)
+              as int;
+              return _buildDashboardRow(
+                icon: Icons.event,
+                iconColor: AppTheme.accentOrange,
+                title: name,
+                subtitle: startsAt != null
+                    ? _formatDateTime(startsAt)
+                    : 'Date TBD',
+                trailing: '$pts pts',
+                trailingColor: AppTheme.accentOrange,
+              );
+            }).toList(),
+          ),
+        ),
+        const SizedBox(height: 16),
+
+        // ── Top by Points ──
+        _buildDashboardSection(
+          icon: Icons.stars,
+          title: 'Top 5 by Points',
+          color: Colors.purple,
+          child: (d['topPoints'] as List).isEmpty
+              ? _buildEmptyRow('No users yet')
+              : Column(
+            children: List.generate(
+              (d['topPoints'] as List).length,
+                  (i) {
+                final doc = (d['topPoints'] as List)[i]
+                as DocumentSnapshot;
+                final data =
+                doc.data() as Map<String, dynamic>;
+                final name =
+                    data['name'] as String? ?? 'User';
+                final pts =
+                (data['points'] ?? 0) as int;
+                return _buildDashboardRow(
+                  icon: i == 0
+                      ? Icons.emoji_events
+                      : Icons.person,
+                  iconColor: i == 0
+                      ? const Color(0xFFFFD700)
+                      : i == 1
+                      ? Colors.grey
+                      : i == 2
+                      ? const Color(0xFFCD7F32)
+                      : Colors.purple
+                      .withOpacity(0.5),
+                  title: name,
+                  subtitle: '#${i + 1} on leaderboard',
+                  trailing: '$pts pts',
+                  trailingColor: Colors.purple,
+                );
+              },
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+
+        // ── Top by Attendance ──
+        _buildDashboardSection(
+          icon: Icons.event_available,
+          title: 'Top 5 by Attendance',
+          color: AppTheme.secondaryGreen,
+          child: (d['topAttendance'] as List).isEmpty
+              ? _buildEmptyRow('No check-ins yet')
+              : Column(
+            children: List.generate(
+              (d['topAttendance'] as List).length,
+                  (i) {
+                final doc =
+                (d['topAttendance'] as List)[i]
+                as DocumentSnapshot;
+                final data =
+                doc.data() as Map<String, dynamic>;
+                final name =
+                    data['name'] as String? ?? 'User';
+                final att =
+                (data['totalAttendance'] ?? 0) as int;
+                return _buildDashboardRow(
+                  icon: Icons.how_to_reg,
+                  iconColor: AppTheme.secondaryGreen,
+                  title: name,
+                  subtitle: 'Most attended',
+                  trailing: '$att events',
+                  trailingColor:
+                  AppTheme.secondaryGreen,
+                );
+              },
+            ),
+          ),
+        ),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  Widget _buildStatCard({
+    required IconData icon,
+    required String label,
+    required String value,
+    required String sub,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, color: color, size: 20),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(value,
+                  style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: color)),
+              Text(label,
+                  style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.textDark)),
+              Text(sub,
+                  style: const TextStyle(
+                      fontSize: 10, color: AppTheme.textLight)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDashboardSection({
+    required IconData icon,
+    required String title,
+    required Color color,
+    required Widget child,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(icon, color: color, size: 16),
+                ),
+                const SizedBox(width: 10),
+                Text(title,
+                    style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textDark)),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          child,
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDashboardRow({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required String trailing,
+    required Color trailingColor,
+  }) {
+    return Padding(
+      padding:
+      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: iconColor.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, color: iconColor, size: 16),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                        color: AppTheme.textDark)),
+                Text(subtitle,
+                    style: const TextStyle(
+                        fontSize: 11, color: AppTheme.textLight)),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(
+                horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: trailingColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(trailing,
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: trailingColor)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyRow(String message) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Center(
+        child: Text(message,
+            style: const TextStyle(
+                color: AppTheme.textLight, fontSize: 13)),
       ),
     );
   }
@@ -372,9 +892,389 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen>
               ),
             ),
           ],
+
+          // ── Existing Events List ──
+          const SizedBox(height: 24),
+          const Text(
+            'All Events',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: AppTheme.textDark,
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Tap edit or delete to manage events',
+            style: TextStyle(fontSize: 13, color: AppTheme.textLight),
+          ),
+          const SizedBox(height: 12),
+
+          StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('events')
+                .orderBy('startsAt', descending: false)
+                .snapshots(),
+            builder: (ctx, snap) {
+              if (!snap.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              final docs = snap.data!.docs;
+              if (docs.isEmpty) {
+                return Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Center(
+                    child: Text('No events yet',
+                        style: TextStyle(color: AppTheme.textLight)),
+                  ),
+                );
+              }
+              return Column(
+                children: docs
+                    .map((doc) => _buildEventManageCard(doc, user))
+                    .toList(),
+              );
+            },
+          ),
         ],
       ),
     );
+  }
+
+  Widget _buildEventManageCard(DocumentSnapshot doc, User user) {
+    final data = doc.data() as Map<String, dynamic>;
+    final name = data['name'] as String? ?? 'Unnamed';
+    final startsAt =
+    (data['startsAt'] as Timestamp?)?.toDate().toLocal();
+    final endsAt =
+    (data['endsAt'] as Timestamp?)?.toDate().toLocal();
+    final points = (data['pointsPerAttendance'] ?? 10) as int;
+    final isPast = startsAt != null &&
+        startsAt.isBefore(DateTime.now());
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      elevation: 2,
+      shape:
+      RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: isPast
+                        ? Colors.grey.withOpacity(0.1)
+                        : AppTheme.primaryBlue.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    Icons.event,
+                    color: isPast
+                        ? AppTheme.textLight
+                        : AppTheme.primaryBlue,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name,
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                          color: isPast
+                              ? AppTheme.textLight
+                              : AppTheme.textDark,
+                        ),
+                      ),
+                      if (startsAt != null)
+                        Text(
+                          '${_formatDateTime(startsAt)}${endsAt != null ? ' → ${_formatDateTime(endsAt)}' : ''}',
+                          style: const TextStyle(
+                              fontSize: 11,
+                              color: AppTheme.textLight),
+                        ),
+                    ],
+                  ),
+                ),
+                // Status badge
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: isPast
+                        ? Colors.grey.withOpacity(0.15)
+                        : AppTheme.successGreen.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    isPast ? 'Past' : 'Active',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: isPast
+                          ? AppTheme.textLight
+                          : AppTheme.successGreen,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.stars,
+                    size: 13, color: AppTheme.accentOrange),
+                const SizedBox(width: 4),
+                Text('$points pts per check-in',
+                    style: const TextStyle(
+                        fontSize: 12, color: AppTheme.accentOrange)),
+                const Spacer(),
+
+                // Edit button
+                TextButton.icon(
+                  onPressed: () =>
+                      _showEditEventDialog(doc, user),
+                  icon: const Icon(Icons.edit, size: 16),
+                  label: const Text('Edit'),
+                  style: TextButton.styleFrom(
+                      foregroundColor: AppTheme.primaryBlue),
+                ),
+                const SizedBox(width: 4),
+
+                // Delete button
+                TextButton.icon(
+                  onPressed: () =>
+                      _confirmDeleteEvent(doc.id, name, user),
+                  icon: const Icon(Icons.delete, size: 16),
+                  label: const Text('Delete'),
+                  style: TextButton.styleFrom(
+                      foregroundColor: AppTheme.errorRed),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Edit event dialog ──
+  void _showEditEventDialog(DocumentSnapshot doc, User user) {
+    final data = doc.data() as Map<String, dynamic>;
+    final nameCtrl =
+    TextEditingController(text: data['name'] as String? ?? '');
+    final ptsCtrl = TextEditingController(
+        text: '${(data['pointsPerAttendance'] ?? 10)}');
+    DateTime start =
+        (data['startsAt'] as Timestamp?)?.toDate().toLocal() ??
+            DateTime.now();
+    DateTime end =
+        (data['endsAt'] as Timestamp?)?.toDate().toLocal() ??
+            DateTime.now().add(const Duration(hours: 1));
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16)),
+          title: const Text('Edit Event'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  decoration: InputDecoration(
+                    labelText: 'Event Name',
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: ptsCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    labelText: 'Points per Check-In',
+                    prefixIcon: const Icon(Icons.stars,
+                        color: AppTheme.accentOrange),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Start time
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.access_time,
+                      color: AppTheme.secondaryGreen),
+                  title: const Text('Start Time',
+                      style: TextStyle(fontSize: 13)),
+                  subtitle: Text(_formatDateTime(start),
+                      style: const TextStyle(fontSize: 12)),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.edit, size: 18),
+                    onPressed: () async {
+                      final picked = await _pickDateTimeDialog(start);
+                      if (picked != null) {
+                        setDialogState(() => start = picked);
+                      }
+                    },
+                  ),
+                ),
+                // End time
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.alarm_off,
+                      color: AppTheme.errorRed),
+                  title: const Text('End Time',
+                      style: TextStyle(fontSize: 13)),
+                  subtitle: Text(_formatDateTime(end),
+                      style: const TextStyle(fontSize: 12)),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.edit, size: 18),
+                    onPressed: () async {
+                      final picked = await _pickDateTimeDialog(end);
+                      if (picked != null) {
+                        setDialogState(() => end = picked);
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                await _updateEvent(
+                  eventId: doc.id,
+                  name: nameCtrl.text.trim(),
+                  startsAt: start,
+                  endsAt: end,
+                  points: int.tryParse(ptsCtrl.text) ?? 10,
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.primaryBlue,
+                  foregroundColor: Colors.white),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Confirm delete dialog ──
+  void _confirmDeleteEvent(
+      String eventId, String name, User user) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16)),
+        title: const Text('Delete Event'),
+        content: Text(
+            'Are you sure you want to delete "$name"?\n\nThis cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _deleteEvent(eventId: eventId, name: name);
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.errorRed,
+                foregroundColor: Colors.white),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Pick date/time for dialog ──
+  Future<DateTime?> _pickDateTimeDialog(DateTime initial) async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime.now().subtract(const Duration(days: 365)),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (date == null) return null;
+    if (!mounted) return null;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(initial),
+    );
+    if (time == null) return null;
+    return DateTime(
+        date.year, date.month, date.day, time.hour, time.minute);
+  }
+
+  // ── Update event API call ──
+  Future<void> _updateEvent({
+    required String eventId,
+    required String name,
+    required DateTime startsAt,
+    required DateTime endsAt,
+    required int points,
+  }) async {
+    if (name.isEmpty) {
+      _showSnackBar('Event name cannot be empty', isError: true);
+      return;
+    }
+    try {
+      await ref.read(adminServiceProvider).updateEvent(
+        eventId: eventId,
+        name: name,
+        startsAt: startsAt,
+        endsAt: endsAt,
+        pointsPerAttendance: points,
+      );
+      _showSnackBar('Event updated! Users notified ✅');
+    } catch (e) {
+      _showSnackBar('Error updating event: $e', isError: true);
+    }
+  }
+
+  // ── Delete event API call ──
+  Future<void> _deleteEvent({
+    required String eventId,
+    required String name,
+  }) async {
+    try {
+      await ref.read(adminServiceProvider).deleteEvent(
+        eventId: eventId,
+        eventName: name,
+      );
+      _showSnackBar('Event deleted! Users notified ✅');
+    } catch (e) {
+      _showSnackBar('Error deleting event: $e', isError: true);
+    }
   }
 
   // ==================== TOKENS TAB ====================
@@ -712,12 +1612,21 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen>
 
   // ==================== REWARDS TAB ====================
 
-  // Reward form controllers
+  // ── Reward form controllers ──
   final _rewardTitle = TextEditingController();
   final _rewardDesc = TextEditingController();
   final _rewardPoints = TextEditingController();
   bool _isCreatingReward = false;
   String? _selectedRewardId;
+
+  // ── Dashboard state ──
+  bool _dashboardLoading = false;
+  Map<String, dynamic>? _dashboardData;
+
+  // ── Group form controllers ──
+  final _groupName = TextEditingController();
+  final _groupDesc = TextEditingController();
+  String _groupType = 'community';
 
   Widget _buildRewardsTab(User user) {
     return SingleChildScrollView(
@@ -1458,5 +2367,492 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen>
     } catch (e) {
       _showSnackBar('Error starting broadcast: $e', isError: true);
     }
+  }
+
+  // ==================== GROUPS TAB ====================
+  Widget _buildGroupsTab(User user) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Create Group Form ──
+          const Text('Create Group',
+              style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textDark)),
+          const SizedBox(height: 4),
+          const Text('Create community or event groups for users',
+              style: TextStyle(
+                  fontSize: 14, color: AppTheme.textLight)),
+          const SizedBox(height: 16),
+
+          Card(
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16)),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: _groupName,
+                    decoration: InputDecoration(
+                      labelText: 'Group Name',
+                      hintText: 'e.g., Basketball Team Chat',
+                      prefixIcon:
+                      const Icon(Icons.group),
+                      border: OutlineInputBorder(
+                          borderRadius:
+                          BorderRadius.circular(12)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _groupDesc,
+                    maxLines: 2,
+                    decoration: InputDecoration(
+                      labelText: 'Description',
+                      hintText: 'What is this group about?',
+                      prefixIcon:
+                      const Icon(Icons.description),
+                      border: OutlineInputBorder(
+                          borderRadius:
+                          BorderRadius.circular(12)),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Group type selector
+                  const Text('Group Type',
+                      style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildTypeOption(
+                          icon: Icons.public,
+                          label: 'Community',
+                          subtitle: 'Everyone auto-joins',
+                          value: 'community',
+                          color: AppTheme.primaryBlue,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _buildTypeOption(
+                          icon: Icons.group,
+                          label: 'Event Group',
+                          subtitle: 'Users request to join',
+                          value: 'event',
+                          color: AppTheme.secondaryGreen,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () =>
+                          _createGroup(user.uid),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Create Group'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor:
+                        AppTheme.primaryBlue,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 14),
+                        shape: RoundedRectangleBorder(
+                            borderRadius:
+                            BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // ── Pending Join Requests ──
+          const Text('Pending Join Requests',
+              style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textDark)),
+          const SizedBox(height: 12),
+
+          StreamBuilder<QuerySnapshot>(
+            stream: ref
+                .read(chatServiceProvider)
+                .getPendingRequests(),
+            builder: (ctx, snap) {
+              if (!snap.hasData) {
+                return const Center(
+                    child: CircularProgressIndicator());
+              }
+              final requests = snap.data!.docs;
+              if (requests.isEmpty) {
+                return Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.check_circle,
+                          color: AppTheme.successGreen),
+                      SizedBox(width: 12),
+                      Text('No pending requests',
+                          style: TextStyle(
+                              color: AppTheme.textLight)),
+                    ],
+                  ),
+                );
+              }
+              return Column(
+                children: requests
+                    .map((r) => _buildRequestCard(r))
+                    .toList(),
+              );
+            },
+          ),
+
+          const SizedBox(height: 24),
+
+          // ── All Groups ──
+          const Text('All Groups',
+              style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textDark)),
+          const SizedBox(height: 12),
+
+          StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('groups')
+                .orderBy('createdAt', descending: true)
+                .snapshots(),
+            builder: (ctx, snap) {
+              if (!snap.hasData) {
+                return const Center(
+                    child: CircularProgressIndicator());
+              }
+              final groups = snap.data!.docs;
+              if (groups.isEmpty) {
+                return Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Center(
+                    child: Text('No groups yet',
+                        style: TextStyle(
+                            color: AppTheme.textLight)),
+                  ),
+                );
+              }
+              return Column(
+                children: groups
+                    .map((g) => _buildAdminGroupCard(g))
+                    .toList(),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTypeOption({
+    required IconData icon,
+    required String label,
+    required String subtitle,
+    required String value,
+    required Color color,
+  }) {
+    final isSelected = _groupType == value;
+    return GestureDetector(
+      onTap: () => setState(() => _groupType = value),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? color.withOpacity(0.1)
+              : Colors.grey.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected
+                ? color
+                : Colors.grey.withOpacity(0.2),
+            width: isSelected ? 2 : 1,
+          ),
+        ),
+        child: Column(
+          children: [
+            Icon(icon,
+                color: isSelected ? color : AppTheme.textLight,
+                size: 24),
+            const SizedBox(height: 6),
+            Text(label,
+                style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    color:
+                    isSelected ? color : AppTheme.textDark)),
+            Text(subtitle,
+                style: const TextStyle(
+                    fontSize: 10, color: AppTheme.textLight),
+                textAlign: TextAlign.center),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRequestCard(DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    final userName = data['userName'] as String? ?? 'User';
+    final groupId = data['groupId'] as String? ?? '';
+
+    return FutureBuilder<DocumentSnapshot>(
+      future: FirebaseFirestore.instance
+          .collection('groups')
+          .doc(groupId)
+          .get(),
+      builder: (ctx, groupSnap) {
+        final groupName =
+            (groupSnap.data?.data() as Map<String, dynamic>?)?[
+            'name'] as String? ??
+                'Unknown Group';
+
+        return Card(
+          margin: const EdgeInsets.only(bottom: 10),
+          elevation: 1,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12)),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 22,
+                  backgroundColor:
+                  AppTheme.primaryBlue.withOpacity(0.1),
+                  child: Text(
+                    userName[0].toUpperCase(),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.primaryBlue),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment:
+                    CrossAxisAlignment.start,
+                    children: [
+                      Text(userName,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                              color: AppTheme.textDark)),
+                      Text(
+                        'Wants to join "$groupName"',
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.textLight),
+                      ),
+                    ],
+                  ),
+                ),
+                // Approve
+                IconButton(
+                  onPressed: () => _approveRequest(
+                      doc.id,
+                      groupId,
+                      data['uid'] as String),
+                  icon: const Icon(Icons.check_circle,
+                      color: AppTheme.successGreen),
+                  tooltip: 'Approve',
+                ),
+                // Reject
+                IconButton(
+                  onPressed: () =>
+                      _rejectRequest(doc.id),
+                  icon: const Icon(Icons.cancel,
+                      color: AppTheme.errorRed),
+                  tooltip: 'Reject',
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAdminGroupCard(DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    final name = data['name'] as String? ?? 'Group';
+    final type = data['type'] as String? ?? 'event';
+    final memberCount = (data['memberCount'] ?? 0) as int;
+    final isCommunity = type == 'community';
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      elevation: 1,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+            horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: isCommunity
+                    ? AppTheme.primaryBlue.withOpacity(0.1)
+                    : AppTheme.secondaryGreen
+                    .withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                isCommunity ? Icons.public : Icons.group,
+                color: isCommunity
+                    ? AppTheme.primaryBlue
+                    : AppTheme.secondaryGreen,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(name,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                          color: AppTheme.textDark)),
+                  Text(
+                    '$memberCount members · ${isCommunity ? 'Community' : 'Event Group'}',
+                    style: const TextStyle(
+                        fontSize: 11,
+                        color: AppTheme.textLight),
+                  ),
+                ],
+              ),
+            ),
+            // Delete group
+            IconButton(
+              onPressed: () =>
+                  _confirmDeleteGroup(doc.id, name),
+              icon: const Icon(Icons.delete_outline,
+                  color: AppTheme.errorRed, size: 20),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _createGroup(String uid) async {
+    if (_groupName.text.trim().isEmpty) {
+      _showSnackBar('Please enter a group name',
+          isError: true);
+      return;
+    }
+    try {
+      if (_groupType == 'community') {
+        await ref.read(chatServiceProvider).createCommunityGroup(
+          name: _groupName.text.trim(),
+          description: _groupDesc.text.trim(),
+          createdBy: uid,
+        );
+      } else {
+        await ref.read(chatServiceProvider).createEventGroup(
+          name: _groupName.text.trim(),
+          description: _groupDesc.text.trim(),
+          createdBy: uid,
+        );
+      }
+      _groupName.clear();
+      _groupDesc.clear();
+      _showSnackBar('Group created successfully!');
+    } catch (e) {
+      _showSnackBar('Error creating group: $e',
+          isError: true);
+    }
+  }
+
+  Future<void> _approveRequest(
+      String requestId, String groupId, String uid) async {
+    try {
+      await ref.read(chatServiceProvider).approveRequest(
+        requestId: requestId,
+        groupId: groupId,
+        uid: uid,
+      );
+      _showSnackBar('Request approved! ✅');
+    } catch (e) {
+      _showSnackBar('Error approving request: $e',
+          isError: true);
+    }
+  }
+
+  Future<void> _rejectRequest(String requestId) async {
+    try {
+      await ref
+          .read(chatServiceProvider)
+          .rejectRequest(requestId);
+      _showSnackBar('Request rejected');
+    } catch (e) {
+      _showSnackBar('Error rejecting request: $e',
+          isError: true);
+    }
+  }
+
+  void _confirmDeleteGroup(String groupId, String name) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16)),
+        title: const Text('Delete Group'),
+        content: Text(
+            'Delete "$name"? All messages will be lost.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await ref
+                  .read(chatServiceProvider)
+                  .deleteGroup(groupId);
+              _showSnackBar('Group deleted');
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.errorRed,
+                foregroundColor: Colors.white),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
   }
 }

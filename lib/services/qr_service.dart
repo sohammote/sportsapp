@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'payload_codec.dart';
 import 'firestore_service.dart';
+import 'notification_service.dart';
+import 'badge_service.dart';
 
 class QrService {
   final _db = FirebaseFirestore.instance;
@@ -20,7 +22,7 @@ class QrService {
     final tokenId = map['t'] as String;
     final eventId = map['e'] as String;
 
-    // Check if already checked in with this token
+    // Step 1 — Check if this exact token was already used
     final existing = await _db
         .collection('attendance')
         .doc(eventId)
@@ -31,12 +33,27 @@ class QrService {
       throw Exception('You have already checked in with this QR code.');
     }
 
-    // Get event points value
-    final eventSnap = await _db.collection('events').doc(eventId).get();
-    final eventData = eventSnap.data() as Map<String, dynamic>?;
-    final pointsPerAttendance = (eventData?['pointsPerAttendance'] ?? 10) as int;
+    // Step 2 — Check if user already attended THIS event (any token)
+    final userEventLogs = await _db
+        .collection('attendance')
+        .doc(eventId)
+        .collection('logs')
+        .where('uid', isEqualTo: uid)
+        .limit(1)
+        .get();
+    if (userEventLogs.docs.isNotEmpty) {
+      throw Exception(
+          'You have already checked in to this event. Each event allows one check-in per person.');
+    }
 
-    // Write attendance log
+    // Step 3 — Get event points value
+    final eventSnap =
+    await _db.collection('events').doc(eventId).get();
+    final eventData = eventSnap.data() as Map<String, dynamic>?;
+    final pointsPerAttendance =
+    (eventData?['pointsPerAttendance'] ?? 10) as int;
+
+    // Step 4 — Write attendance log
     await _db
         .collection('attendance')
         .doc(eventId)
@@ -49,12 +66,39 @@ class QrService {
       'pointsAwarded': pointsPerAttendance,
     });
 
-    // Award points + increment attendance count
+    // Step 5 — Award points + increment attendance count
     await _firestoreService.awardPoints(
       uid: uid,
       points: pointsPerAttendance,
       eventId: eventId,
       tokenId: tokenId,
+    );
+
+    // Step 6 — Show local notification
+    final eventName = eventData?['name'] as String? ?? 'the event';
+    await NotificationService().showCheckInSuccessNotification(
+      eventName: eventName,
+      points: pointsPerAttendance,
+    );
+
+    // Step 7 — Update streak + check badges
+    final badgeService = BadgeService();
+    final newStreak = await badgeService.updateStreak(uid);
+
+    // Get updated profile stats for badge check
+    final profileSnap =
+    await _db.collection('profiles').doc(uid).get();
+    final profileData =
+    profileSnap.data() as Map<String, dynamic>?;
+    final totalAttendance =
+    (profileData?['totalAttendance'] ?? 0) as int;
+    final totalPoints = (profileData?['points'] ?? 0) as int;
+
+    await badgeService.checkAndAwardBadges(
+      uid: uid,
+      totalAttendance: totalAttendance,
+      totalPoints: totalPoints,
+      currentStreak: newStreak,
     );
   }
 
@@ -116,10 +160,13 @@ class QrService {
         rewardTitle: rewardTitle,
       );
     } catch (e) {
-      // If points deduction fails, redemption is already written
-      // Log the error but don't re-throw — reward was given
-      // Admin can manually adjust points if needed
       debugPrint('Warning: Redemption written but points deduction failed: $e');
     }
+
+    // Step 6 — Show local notification
+    await NotificationService().showRewardRedeemedNotification(
+      rewardTitle: rewardTitle,
+      pointsSpent: costPoints,
+    );
   }
 }
